@@ -64,13 +64,13 @@ jobs:
   deploy-to-coolify:
     name: Trigger Coolify (optional)
     needs: build-and-push
-    env:
-      COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
-      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-    if: env.COOLIFY_WEBHOOK != ''
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Coolify deployment (optional)
+        if: ${{ secrets.COOLIFY_WEBHOOK != '' }}
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
         run: |
           echo "Triggering Coolify deployment..."
           curl --location --request POST "$COOLIFY_WEBHOOK" \
