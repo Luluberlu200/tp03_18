@@ -1,54 +1,79 @@
-image: python
+name: CI/CD
 
-stages:
-  - test
-  - build
-  - deploy
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
 
-# --- 1) TESTS ---
-unit-test:
-  stage: test
-  before_script:
-    - pip install -r requirements.txt
-  script:
-    - python -m unittest test.py
+permissions:
+  contents: read
+  packages: write
 
-# --- 2) BUILD & PUSH DOCKER IMAGE ---
-# CI_REGISTRY, CI_REGISTRY_USER, CI_REGISTRY_PASSWORD, CI_REGISTRY_IMAGE, CI_COMMIT_SHA
-# sont fournis nativement par GitLab Runner
-build-docker-image:
-  image: docker:latest
-  stage: build
-  services:
-    - docker:dind
-  variables:
-    DOCKER_TLS_CERTDIR: ""
-  before_script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" "$CI_REGISTRY" --password-stdin
-  script:
-    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
-  after_script:
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
-    - docker tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" "$CI_REGISTRY_IMAGE:latest"
-    - docker push "$CI_REGISTRY_IMAGE:latest"
-  only:
-    - develop
-  needs:
-    - unit-test
+jobs:
+  test:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-# --- 3) DEPLOY (Coolify webhook) ---
-deploy-job:
-  stage: deploy
-  image: curlimages/curl:latest
-  script:
-    - echo "Triggering Coolify deployment..."
-    - >
-      curl --location --request POST "$COOLIFY_WEBHOOK" \
-         --header "Authorization: Bearer $TOKEN" \
-         --header "Content-Type: application/json" \
-         --data '{}'
-  needs:
-    - build-docker-image
-  when: manual
-  only:
-    - develop
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip; pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -v
+
+  build-and-push:
+    name: Build and push Docker image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image to GHCR
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+  deploy-to-coolify:
+    name: Trigger Coolify (optional)
+    needs: build-and-push
+    if: ${{ secrets.COOLIFY_WEBHOOK != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Coolify deployment (optional)
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          echo "Triggering Coolify deployment..."
+          curl --location --request POST "$COOLIFY_WEBHOOK" \
+            --header "Authorization: Bearer $COOLIFY_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data '{}'
